@@ -35,3 +35,4 @@ Message_dump.txt
 PromptBox_dump.txt
 fix-*.js
 test.jpg
+!.env.example
