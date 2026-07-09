@@ -1,4 +1,4 @@
-﻿"use client"
+"use client"
 import { useAuth, useClerk } from '@clerk/nextjs'
 import axios from 'axios'
 import React, { useEffect, useState } from 'react'
@@ -217,7 +217,7 @@ const SettingsModal = ({ isOpen, onClose, initialTab }) => {
                                     <div>
                                         <p className='text-xs mb-1' style={{ color: 'var(--text-muted)' }}>Keyboard shortcuts</p>
                                         <div style={{ borderColor: 'var(--border-color)' }} className='border rounded-lg p-3 text-sm flex flex-col gap-1.5'>
-                                            <div className='flex justify-between'><span>New chat</span><span style={{ color: 'var(--text-muted)' }}>Ctrl + Shift + O</span></div>
+                                            <div className='flex justify-between'><span>New chat</span><span style={{ color: 'var(--text-muted)' }}>Ctrl + Shift + N</span></div>
                                             <div className='flex justify-between'><span>Send message</span><span style={{ color: 'var(--text-muted)' }}>Enter</span></div>
                                             <div className='flex justify-between'><span>New line</span><span style={{ color: 'var(--text-muted)' }}>Shift + Enter</span></div>
                                         </div>

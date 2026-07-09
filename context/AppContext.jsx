@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 import { useAuth, useUser } from "@clerk/nextjs";
 import axios from "axios";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
@@ -90,7 +90,20 @@ export const AppContextProvider = ({children})=>{
                     setSelectedChat(newest || null);
                 } else {
                     const updated = list.find(c => c._id === selectedChat._id);
-                    if (updated) setSelectedChat(updated);
+                    if (updated) {
+                        setSelectedChat((prev) => {
+                            if (!prev) return updated;
+                            // Guard against a background refresh landing before the
+                            // server has saved a just-sent message: never let a
+                            // fetch with FEWER messages overwrite what's already
+                            // showing locally, or the newest user/assistant bubble
+                            // can silently vanish.
+                            if ((updated.messages?.length || 0) < (prev.messages?.length || 0)) {
+                                return { ...updated, messages: prev.messages };
+                            }
+                            return updated;
+                        });
+                    }
                 }
             }
         } catch (error) { console.log(error.message)}
@@ -179,7 +192,16 @@ export const AppContextProvider = ({children})=>{
             const {data} = await axios.post("/api/chat/clear", {chatId}, {headers:{ Authorization: `Bearer ${token}` }})
             if(data.success){
                 toast.success(data.message);
-                fetchUsersChats();
+                // Update directly instead of relying on fetchUsersChats' generic
+                // refresh, since that path now guards against message counts
+                // shrinking (to protect against a stale-fetch race elsewhere) -
+                // an intentional clear needs to bypass that guard.
+                if (selectedChat?._id === chatId) {
+                    setSelectedChat((prev) => prev ? { ...prev, messages: [] } : prev);
+                }
+                setChats((prevChats) => prevChats.map((chat) =>
+                    chat._id === chatId ? { ...chat, messages: [] } : chat
+                ));
             } else {
                 toast.error(data.message);
             }

@@ -25,7 +25,7 @@ const PromptBox = ({setIsLoading, isLoading}) => {
 
     const [prompt, setPrompt] = useState('');
     const promptRef = useRef('');
-    useEffect(() => { promptRef.current = prompt; }, [prompt]);
+    useEffect(() => { promptRef.current = prompt; },[prompt]);
     const {user, chats, setChats, selectedChat, setSelectedChat, createNewChat} = useAppContext();
     const {getToken} = useAuth();
     const isSendingRef = useRef(false);
@@ -36,6 +36,7 @@ const PromptBox = ({setIsLoading, isLoading}) => {
     const [useSearch, setUseSearch] = useState(false);
     const [isListening, setIsListening] = useState(false);
     const recognitionRef = useRef(null);
+    const baseTranscriptRef = useRef(''); // holds the prompt text as it was BEFORE this recording session started
     const [imageMode, setImageMode] = useState(false);
     const [researchMode, setResearchMode] = useState(false);
     const [isResearching, setIsResearching] = useState(false);
@@ -55,10 +56,6 @@ const PromptBox = ({setIsLoading, isLoading}) => {
     }, [showUploadMenu]);
 
     const startVoiceInput = () => {
-        if (!selectedChat) {
-            toast.error("Hang on, your chat is still loading.");
-            return;
-        }
         if (!window.isSecureContext) {
             toast.error(`Voice input needs HTTPS or localhost ${EM_DASH} it won't work over a plain network IP.`);
             return;
@@ -82,7 +79,14 @@ const PromptBox = ({setIsLoading, isLoading}) => {
         recognition.interimResults = true;
         recognition.maxAlternatives = 3;
         recognition._retryCount = 0;
-        recognition.onstart = () => setIsListening(true);
+        recognition.onstart = () => {
+            setIsListening(true);
+            // Snapshot whatever was already in the textbox ONCE, at the start of this
+            // recording session. Every onresult event (including interim ones) will be
+            // rebuilt from this fixed base instead of the live/mutating prompt state,
+            // which is what was causing words to double up as interim results refined.
+            baseTranscriptRef.current = promptRef.current;
+        };
         recognition.onend = () => setIsListening(false);
         recognition.onerror = (event) => {
             setIsListening(false);
@@ -108,9 +112,13 @@ const PromptBox = ({setIsLoading, isLoading}) => {
         recognition.onresult = (event) => {
             const result = event.results[event.results.length - 1];
             const transcript = result[0].transcript;
-            const combined = promptRef.current ? `${promptRef.current} ${transcript}` : transcript;
+            const base = baseTranscriptRef.current;
+            const combined = base ? `${base} ${transcript}` : transcript;
             setPrompt(combined);
             if (result.isFinal) {
+                // Lock in the finalized text as the new base, in case recognition
+                // continues (e.g. more results arrive) before onend fires.
+                baseTranscriptRef.current = combined;
                 toast.success("Voice captured");
                 sendPrompt({ preventDefault: () => {} }, combined);
             }
@@ -278,7 +286,7 @@ const PromptBox = ({setIsLoading, isLoading}) => {
                 role: "user",
                 content: promptCopy,
                 timestamp: Date.now(),
-                ...(attachmentsForDisplay.length > 0 ? { attachments: attachmentsForDisplay } : {})
+                ...(attachmentsForDisplay.length > 0? { attachments: attachmentsForDisplay } : {})
             }
 
             setChats((prevChats)=> prevChats.map((chat)=> chat._id === activeChat._id ?
@@ -302,7 +310,7 @@ const PromptBox = ({setIsLoading, isLoading}) => {
                         prompt: promptCopy
                     }, {headers:{ Authorization: `Bearer ${token}` }});
                     if (data.success) {
-                        setSelectedChat((prev) => ({ ...prev, messages:[...(prev?.messages || []), data.data] }));
+                        setSelectedChat((prev) => ({...prev, messages:[...(prev?.messages || []), data.data] }));
                         setChats((prevChats)=>prevChats.map((chat)=> chat._id === activeChat._id ? {...chat, messages: [...chat.messages, data.data]} : chat));
                     } else {
                         toast.error(data.message || 'Research failed');
@@ -347,8 +355,8 @@ const PromptBox = ({setIsLoading, isLoading}) => {
 
             let finalPrompt = promptCopy;
             const imageBase64s = attachedFiles.filter(f => f.type === 'image').map(f => f.content);
-            const textFiles = attachedFiles.filter(f => f.type !== 'image');
-            const fileMetas = attachedFiles.map(f => ({
+            const textFiles = attachedFiles.filter(f=> f.type !== 'image');
+            const fileMetas = attachedFiles.map(f =>({
                 fileName: f.name,
                 fileData: f.fileData,
                 fileType: f.fileType
@@ -387,7 +395,7 @@ const PromptBox = ({setIsLoading, isLoading}) => {
 
             // Text path: real streaming via fetch, cancellable with AbortController
             let assistantMessage = { role: 'assistant', content: "", timestamp: Date.now() };
-            setSelectedChat((prev) => ({ ...prev, messages: [...(prev?.messages || []), assistantMessage] }));
+            setSelectedChat((prev) => ({ ...prev, messages: [...(prev?.messages || []), assistantMessage]}));
             setIsLoading(false);
 
             const controller = new AbortController();
@@ -625,7 +633,7 @@ const PromptBox = ({setIsLoading, isLoading}) => {
                             disabled={isLoading || !prompt.trim()}
                             className={`${prompt.trim() && selectedChat? 'bg-primary' : 'bg-gray-400/40'} rounded-full p-2 cursor-pointer disabled:cursor-not-allowed`}
                         >
-                            <Image className='w-3.5 aspect-square' src={prompt.trim() ? assets.arrow_icon : assets.arrow_icon_dull} alt=''/>
+                            <Image className='w-3.5 aspect-square' src={prompt.trim() ? assets.arrow_icon: assets.arrow_icon_dull} alt=''/>
                         </button>
                     )}
                 </div>

@@ -13,7 +13,7 @@ import toast from "react-hot-toast";
 export default function Home() {
 
   const [isLoading, setIsLoading] = useState(false);
-  const {selectedChat, expand, setExpand, fetchUsersChats, clearChat, archiveChat, pinChat, shareChat} = useAppContext();
+  const {selectedChat, expand, setExpand, fetchUsersChats, clearChat, archiveChat, pinChat, shareChat, createNewChat} = useAppContext();
   const {getToken} = useAuth();
   const containerRef = useRef(null);
   const [titleMenuOpen, setTitleMenuOpen] = useState(false);
@@ -129,15 +129,14 @@ export default function Home() {
   }
     useEffect(() => {
         const handleKeyDown = (e) => {
-            if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'o') {
+            if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'n') {
                 e.preventDefault()
-                const newChatBtn = document.querySelector('[data-new-chat-btn]')
-                if (newChatBtn) newChatBtn.click()
+                createNewChat()
             }
         }
         window.addEventListener('keydown', handleKeyDown)
         return () => window.removeEventListener('keydown', handleKeyDown)
-    }, [])
+    }, [createNewChat])
 
   return (
     <div>
@@ -234,6 +233,7 @@ export default function Home() {
               fileName={msg.fileName}
               fileData={msg.fileData}
               fileType={msg.fileType}
+              attachments={msg.attachments}
             />
           ))}
           {
