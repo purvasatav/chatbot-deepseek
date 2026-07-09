@@ -7,7 +7,7 @@ import remarkGfm from 'remark-gfm'
 import Prism from 'prismjs'
 import toast from 'react-hot-toast'
 
-const Message = ({role, content, isLast, chatId, index, fileName, fileData, fileType}) => {
+const Message = ({role, content, isLast, chatId, index, fileName, fileData, fileType, attachments}) => {
 
     const {regenerateResponse, editMessage, deleteMessage} = useAppContext()
     const [feedback, setFeedback] = useState(null)
@@ -18,9 +18,13 @@ const Message = ({role, content, isLast, chatId, index, fileName, fileData, file
     const [isDeleting, setIsDeleting] = useState(false)
     const [isSpeaking, setIsSpeaking] = useState(false)
 
-    // Strip any <think>...</think> reasoning blocks the model may emit
-    // before they ever reach the markdown renderer.
     const displayContent = (content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+
+    // Normalize to a single list regardless of whether this message uses
+    // the new `attachments` array or the legacy single fileName/fileData/fileType fields.
+    const fileList = (attachments && attachments.length > 0)
+        ? attachments
+        : (fileName ? [{ fileName, fileData, fileType }] : []);
 
     useEffect(()=>{
         Prism.highlightAll()
@@ -154,50 +158,61 @@ const Message = ({role, content, isLast, chatId, index, fileName, fileData, file
         }
     }
 
-    const openAttachedFile = () => {
-        if (!fileData) { toast.error("File data not available"); return; }
+    const openAttachedFile = (data) => {
+        if (!data) { toast.error("File data not available"); return; }
         const win = window.open();
         if (win) {
             win.document.write(
-                `<iframe src="${fileData}" style="width:100%;height:100%;border:none;"></iframe>`
+                `<iframe src="${data}" style="width:100%;height:100%;border:none;"></iframe>`
             );
         } else {
             toast.error("Popup blocked - please allow popups to view the file");
         }
     }
 
-    const isPdf = fileType === 'application/pdf' || (fileName || '').toLowerCase().endsWith('.pdf');
-    const isImage = (fileType || '').startsWith('image/') ||
-        /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(fileName || '');
+    const isImageFile = (f) => (f.fileType || '').startsWith('image/') ||
+        /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(f.fileName || '');
+    const isPdfFile = (f) => f.fileType === 'application/pdf' || (f.fileName || '').toLowerCase().endsWith('.pdf');
+
+    const imageFiles = fileList.filter(isImageFile);
+    const docFiles = fileList.filter(f => !isImageFile(f));
 
   return (
     <div className='flex flex-col items-center w-full max-w-3xl text-sm'>
       <div className={`flex flex-col  w-full mb-8 ${role === 'user' && 'items-end'}`}>
-        {fileName && isImage && (
-            <div className='mb-2 max-w-xs'>
-                <img
-                    src={fileData}
-                    alt={fileName}
-                    onClick={openAttachedFile}
-                    className='rounded-xl max-h-64 w-auto cursor-pointer hover:opacity-90 transition object-contain'
-                    title='Click to open full size'
-                />
+        {imageFiles.length > 0 && (
+            <div className='mb-2 flex flex-wrap gap-2 justify-end max-w-md'>
+                {imageFiles.map((f, i) => (
+                    <img
+                        key={i}
+                        src={f.fileData}
+                        alt={f.fileName}
+                        onClick={()=>openAttachedFile(f.fileData)}
+                        className='rounded-xl max-h-48 max-w-[10rem] w-auto cursor-pointer hover:opacity-90 transition object-contain'
+                        title='Click to open full size'
+                    />
+                ))}
             </div>
         )}
-        {fileName && !isImage && (
-            <div
-                onClick={openAttachedFile}
-                style={{backgroundColor: 'var(--bg-surface-2)'}}
-                className='flex items-center gap-3 hover:opacity-90 transition cursor-pointer rounded-xl px-3 py-2.5 mb-2 max-w-xs'
-                title='Click to open file'
-            >
-                <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${isPdf ? 'bg-red-500' : 'bg-blue-500'}`}>
-                    <span className='text-white text-xs font-bold'>{isPdf ? 'PDF' : 'DOC'}</span>
-                </div>
-                <div className='min-w-0'>
-                    <p style={{color: 'var(--text-primary)'}} className='text-sm truncate'>{fileName}</p>
-                    <p style={{color: 'var(--text-muted)'}} className='text-xs'>{isPdf ? 'PDF' : 'Document'} - Click to open</p>
-                </div>
+        {docFiles.length > 0 && (
+            <div className='mb-2 flex flex-col gap-2 items-end'>
+                {docFiles.map((f, i) => (
+                    <div
+                        key={i}
+                        onClick={()=>openAttachedFile(f.fileData)}
+                        style={{backgroundColor: 'var(--bg-surface-2)'}}
+                        className='flex items-center gap-3 hover:opacity-90 transition cursor-pointer rounded-xl px-3 py-2.5 max-w-xs'
+                        title='Click to open file'
+                    >
+                        <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${isPdfFile(f) ? 'bg-red-500' : 'bg-blue-500'}`}>
+                            <span className='text-white text-xs font-bold'>{isPdfFile(f) ? 'PDF' : 'DOC'}</span>
+                        </div>
+                        <div className='min-w-0'>
+                            <p style={{color: 'var(--text-primary)'}} className='text-sm truncate'>{f.fileName}</p>
+                            <p style={{color: 'var(--text-muted)'}} className='text-xs'>{isPdfFile(f) ? 'PDF' : 'Document'} - Click to open</p>
+                        </div>
+                    </div>
+                ))}
             </div>
         )}
         <div style={role === 'user' ? {backgroundColor: 'var(--bg-user-bubble)', color: 'var(--text-primary)'} : {color: 'var(--text-primary)'}} className={`group relative flex max-w-2xl py-3 rounded-xl ${role === 'user' ? 'px-5' : 'gap-3'}`}>

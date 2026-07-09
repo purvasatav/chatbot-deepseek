@@ -8,9 +8,6 @@ import toast from 'react-hot-toast';
 
 const IMAGE_INTENT_REGEX = /\b(generate|create|draw|make|design|paint)\b[^.?!]{0,25}\b(image|picture|photo|drawing|illustration|artwork|wallpaper|logo|icon|painting)\b/i;
 
-// Safe emoji constants - built from Unicode escapes instead of literal
-// characters so they can never get mangled by terminal/console encoding
-// (Windows PowerShell, cmd.exe, etc. often aren't UTF-8 by default).
 const ICON = {
     paperclip: "\uD83D\uDCCE",
     close: "\u2715",
@@ -21,11 +18,8 @@ const ICON = {
 };
 const EM_DASH = "\u2014";
 
-// Vercel's serverless functions hard-cap request bodies at 4.5MB.
-// We block anything over 4MB client-side to leave headroom for the
-// rest of the multipart payload, and to show a clear message instead
-// of a cryptic 413 error from the server.
-const MAX_FILE_SIZE = 4 * 1024 * 1024; // 4MB
+const MAX_FILE_SIZE = 4 * 1024 * 1024; // 4MB per file
+const MAX_FILES = 5; // per message
 
 const PromptBox = ({setIsLoading, isLoading}) => {
 
@@ -35,7 +29,7 @@ const PromptBox = ({setIsLoading, isLoading}) => {
     const {user, chats, setChats, selectedChat, setSelectedChat, createNewChat} = useAppContext();
     const {getToken} = useAuth();
     const isSendingRef = useRef(false);
-    const [attachedFile, setAttachedFile] = useState(null);
+    const [attachedFiles, setAttachedFiles] = useState([]); // array of { name, type, content, fileData, fileType }
     const fileInputRef = useRef(null);
     const [isProcessingFile, setIsProcessingFile] = useState(false);
     const [showUploadMenu, setShowUploadMenu] = useState(false);
@@ -49,7 +43,6 @@ const PromptBox = ({setIsLoading, isLoading}) => {
     const abortControllerRef = useRef(null);
     const menuRef = useRef(null);
 
-    // Close the upload menu on outside click, so it behaves like a real menu.
     useEffect(() => {
         if (!showUploadMenu) return;
         const handleClickOutside = (e) => {
@@ -126,64 +119,56 @@ const PromptBox = ({setIsLoading, isLoading}) => {
         recognition.start();
     };
 
-    const handleFileChange = async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-
-        if (file.size > MAX_FILE_SIZE) {
-            toast.error(`"${file.name}" is too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Please upload files under 4MB.`);
-            e.target.value = '';
-            return;
-        }
-
-        const name = file.name.toLowerCase();
-
-        try {
-            setIsProcessingFile(true);
-
+    // Processes a single File object into our internal attachment shape.
+    const processSingleFile = (file) => {
+        return new Promise((resolve, reject) => {
+            const name = file.name.toLowerCase();
             if (file.type.startsWith("image/")) {
                 const reader = new FileReader();
                 reader.onload = (ev) => {
-                    setAttachedFile({
+                    resolve({
                         name: file.name,
                         type: 'image',
                         content: ev.target.result,
                         fileData: ev.target.result,
                         fileType: file.type
                     });
-                    toast.success(`Attached: ${file.name}`);
-                    setIsProcessingFile(false);
                 };
+                reader.onerror = () => reject(new Error("Could not read image"));
                 reader.readAsDataURL(file);
 
-            } else if (name.endsWith(".pdf") || name.endsWith(".docx")){
-                const token = await getToken();
-                const formData = new FormData();
-                formData.append("file", file);
-                const { data } = await axios.post('/api/chat/extract', formData, {
-                    headers: {
-                        'Content-Type': 'multipart/form-data',
-                        Authorization: `Bearer ${token}`
-                    }
-                });
-                if (data.success) {
-                    const reader = new FileReader();
-                    reader.onload = (ev) => {
-                        setAttachedFile({
-                            name: file.name,
-                            type: 'text',
-                            content: data.text,
-                            fileData: ev.target.result,
-                            fileType: file.type || (name.endsWith(".pdf") ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            } else if (name.endsWith(".pdf") || name.endsWith(".docx")) {
+                (async () => {
+                    try {
+                        const token = await getToken();
+                        const formData = new FormData();
+                        formData.append("file", file);
+                        const { data } = await axios.post('/api/chat/extract', formData, {
+                            headers: {
+                                'Content-Type': 'multipart/form-data',
+                                Authorization: `Bearer ${token}`
+                            }
                         });
-                        toast.success(`Attached: ${file.name}`);
-                        setIsProcessingFile(false);
-                    };
-                    reader.readAsDataURL(file);
-                } else {
-                    toast.error(data.message || "Could not read file");
-                    setIsProcessingFile(false);
-                }
+                        if (!data.success) {
+                            reject(new Error(data.message || "Could not read file"));
+                            return;
+                        }
+                        const reader = new FileReader();
+                        reader.onload = (ev) => {
+                            resolve({
+                                name: file.name,
+                                type: 'text',
+                                content: data.text,
+                                fileData: ev.target.result,
+                                fileType: file.type || (name.endsWith(".pdf") ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                            });
+                        };
+                        reader.onerror = () => reject(new Error("Could not read file"));
+                        reader.readAsDataURL(file);
+                    } catch (err) {
+                        reject(err);
+                    }
+                })();
 
             } else {
                 const reader = new FileReader();
@@ -191,24 +176,61 @@ const PromptBox = ({setIsLoading, isLoading}) => {
                     const textContent = ev.target.result;
                     const dataReader = new FileReader();
                     dataReader.onload = (ev2) => {
-                        setAttachedFile({
+                        resolve({
                             name: file.name,
                             type: 'text',
                             content: textContent,
                             fileData: ev2.target.result,
                             fileType: file.type || 'text/plain'
                         });
-                        toast.success(`Attached: ${file.name}`);
-                        setIsProcessingFile(false);
                     };
+                    dataReader.onerror = () => reject(new Error("Could not read file"));
                     dataReader.readAsDataURL(file);
                 };
+                reader.onerror = () => reject(new Error("Could not read file"));
                 reader.readAsText(file);
             }
-        } catch (error) {
-            toast.error("Failed to process file: " + error.message);
-            setIsProcessingFile(false);
+        });
+    };
+
+    const handleFileChange = async (e) => {
+        const files = Array.from(e.target.files || []);
+        if (files.length === 0) return;
+
+        if (attachedFiles.length + files.length > MAX_FILES) {
+            toast.error(`You can attach up to ${MAX_FILES} files per message.`);
+            e.target.value = '';
+            return;
         }
+
+        const oversized = files.find(f => f.size > MAX_FILE_SIZE);
+        if (oversized) {
+            toast.error(`"${oversized.name}" is too large (${(oversized.size / 1024 / 1024).toFixed(1)}MB). Please upload files under 4MB.`);
+            e.target.value = '';
+            return;
+        }
+
+        setIsProcessingFile(true);
+        try {
+            const results = await Promise.all(
+                files.map(f => processSingleFile(f).catch(err => ({ error: err.message || "Failed to process file", name: f.name })))
+            );
+            const succeeded = results.filter(r => !r.error);
+            const failed = results.filter(r => r.error);
+
+            if (succeeded.length > 0) {
+                setAttachedFiles(prev => [...prev, ...succeeded]);
+                toast.success(`Attached ${succeeded.length} file${succeeded.length > 1 ? 's' : ''}`);
+            }
+            failed.forEach(f => toast.error(`${f.name}: ${f.error}`));
+        } finally {
+            setIsProcessingFile(false);
+            e.target.value = '';
+        }
+    };
+
+    const removeAttachedFile = (idx) => {
+        setAttachedFiles(prev => prev.filter((_, i) => i !== idx));
     };
 
     const handleKeyDown = (e)=>{
@@ -239,22 +261,24 @@ const PromptBox = ({setIsLoading, isLoading}) => {
                 setSelectedChat(activeChat);
             }
             if(isLoading) return toast.error('Wait for the previous prompt response');
-            if(isProcessingFile) return toast.error('Wait for the file to finish processing');
+            if(isProcessingFile) return toast.error('Wait for the file(s) to finish processing');
             if(!promptCopy.trim()) return;
 
             isSendingRef.current = true;
             setIsLoading(true)
             setPrompt("")
 
+            const attachmentsForDisplay = attachedFiles.map(f => ({
+                fileName: f.name,
+                fileData: f.fileData,
+                fileType: f.fileType
+            }));
+
             const userPrompt = {
                 role: "user",
                 content: promptCopy,
                 timestamp: Date.now(),
-                ...(attachedFile && attachedFile.fileData ? {
-                    fileName: attachedFile.name,
-                    fileData: attachedFile.fileData,
-                    fileType: attachedFile.fileType
-                } : {})
+                ...(attachmentsForDisplay.length > 0 ? { attachments: attachmentsForDisplay } : {})
             }
 
             setChats((prevChats)=> prevChats.map((chat)=> chat._id === activeChat._id ?
@@ -294,13 +318,15 @@ const PromptBox = ({setIsLoading, isLoading}) => {
                 return;
             }
 
-            // Image generation path: triggers on explicit imageMode toggle OR detected intent in plain text
-            const autoImageIntent = !imageMode && !attachedFile && IMAGE_INTENT_REGEX.test(promptCopy);
+            // Image generation path
+            const autoImageIntent = !imageMode && attachedFiles.length === 0 && IMAGE_INTENT_REGEX.test(promptCopy);
 
             if (imageMode || autoImageIntent) {
                 setImageMode(false);
-                const editImageBase64 = (attachedFile && attachedFile.type === 'image') ? attachedFile.content : null;
-                if (editImageBase64) setAttachedFile(null);
+                // Only the first attached image is used as the edit base (pollinations kontext supports one source image).
+                const firstImage = attachedFiles.find(f => f.type === 'image');
+                const editImageBase64 = firstImage ? firstImage.content : null;
+                if (firstImage) setAttachedFiles([]);
                 const token = await getToken();
                 const {data} = await axios.post('/api/chat/image', {
                     chatId: activeChat._id,
@@ -320,46 +346,32 @@ const PromptBox = ({setIsLoading, isLoading}) => {
             }
 
             let finalPrompt = promptCopy;
-            let imageBase64 = null;
-            let fileMeta = null;
+            const imageBase64s = attachedFiles.filter(f => f.type === 'image').map(f => f.content);
+            const textFiles = attachedFiles.filter(f => f.type !== 'image');
+            const fileMetas = attachedFiles.map(f => ({
+                fileName: f.name,
+                fileData: f.fileData,
+                fileType: f.fileType
+            }));
 
-            if (attachedFile) {
-                if (attachedFile.type === 'image') {
-                    imageBase64 = attachedFile.content;
-                    finalPrompt = promptCopy || "Describe this image.";
-                    // Previously never set for images, so the attached image
-                    // would display locally but disappear after a page
-                    // refresh (never saved server-side). Now it's saved just
-                    // like text/PDF attachments.
-                    if (attachedFile.fileData) {
-                        fileMeta = {
-                            fileName: attachedFile.name,
-                            fileData: attachedFile.fileData,
-                            fileType: attachedFile.fileType
-                        };
-                    }
-                } else {
-                    finalPrompt = `${promptCopy}\n\n[Attached file: ${attachedFile.name}]\n${attachedFile.content}`;
-                    if (attachedFile.fileData) {
-                        fileMeta = {
-                            fileName: attachedFile.name,
-                            fileData: attachedFile.fileData,
-                            fileType: attachedFile.fileType
-                        };
-                    }
-                }
+            if (textFiles.length > 0) {
+                const blocks = textFiles.map(f => `[Attached file: ${f.name}]\n${f.content}`).join('\n\n');
+                finalPrompt = `${promptCopy}\n\n${blocks}`;
+            } else if (imageBase64s.length > 0 && !promptCopy.trim()) {
+                finalPrompt = "Describe these images.";
             }
-            setAttachedFile(null);
 
-            // Image path: non-streaming, single JSON response
-            if (imageBase64) {
+            setAttachedFiles([]);
+
+            // Vision path: non-streaming, single JSON response (one or more images)
+            if (imageBase64s.length > 0) {
                 const token = await getToken();
                 const {data} = await axios.post('/api/chat/ai', {
                     chatId: activeChat._id,
                     prompt: finalPrompt,
                     displayPrompt: promptCopy,
-                    imageBase64,
-                    fileMeta
+                    imageBase64s,
+                    fileMetas
                 }, {headers:{ Authorization: `Bearer ${token}` }})
                 setIsLoading(false);
                 if (data.success) {
@@ -397,7 +409,7 @@ const PromptBox = ({setIsLoading, isLoading}) => {
                         prompt: finalPrompt,
                         displayPrompt: promptCopy,
                         useSearch,
-                        fileMeta
+                        fileMetas
                     }),
                     signal: controller.signal
                 });
@@ -481,15 +493,20 @@ const PromptBox = ({setIsLoading, isLoading}) => {
         <form onSubmit={sendPrompt}
         style={{backgroundColor: 'var(--bg-surface)', color: 'var(--text-primary)', borderColor: 'var(--border-color)'}}
         className={`w-full ${selectedChat?.messages?.length > 0 ? "max-w-3xl" : "max-w-2xl"} border p-4 rounded-3xl mt-4 transition-all`}>
-            {attachedFile && (
-                <div style={{color: 'var(--text-secondary)'}} className='text-xs mb-2 flex items-center gap-2'>
-                    <span>{ICON.paperclip}</span> {attachedFile.name}
-                    <span onClick={()=>setAttachedFile(null)} className='cursor-pointer text-red-400'>{ICON.close}</span>
+            {attachedFiles.length > 0 && (
+                <div className='flex flex-wrap gap-2 mb-2'>
+                    {attachedFiles.map((f, i) => (
+                        <div key={i} style={{color: 'var(--text-secondary)', backgroundColor: 'var(--bg-surface-2)'}} className='text-xs flex items-center gap-2 rounded-full px-2.5 py-1'>
+                            <span>{ICON.paperclip}</span>
+                            <span className='max-w-[8rem] truncate'>{f.name}</span>
+                            <span onClick={()=>removeAttachedFile(i)} className='cursor-pointer text-red-400'>{ICON.close}</span>
+                        </div>
+                    ))}
                 </div>
             )}
             {imageMode && (
                 <div className='text-xs text-purple-400 mb-2 flex items-center gap-2'>
-                    <span>{ICON.picture}</span> Image mode {EM_DASH} describe what to generate{attachedFile?.type === 'image' ? ' or edit' : ''}
+                    <span>{ICON.picture}</span> Image mode {EM_DASH} describe what to generate{attachedFiles.some(f=>f.type==='image') ? ' or edit' : ''}
                     <span onClick={()=>setImageMode(false)} className='cursor-pointer text-red-400'>{ICON.close}</span>
                 </div>
             )}
@@ -516,7 +533,7 @@ const PromptBox = ({setIsLoading, isLoading}) => {
                 <div className='text-xs text-blue-400 mb-2'>Researching across multiple sources... this can take 20-30s</div>
             )}
             {isProcessingFile && (
-                <div style={{color: 'var(--text-muted)'}} className='text-xs mb-2'>Processing file...</div>
+                <div style={{color: 'var(--text-muted)'}} className='text-xs mb-2'>Processing file(s)...</div>
             )}
             <textarea
             onKeyDown={handleKeyDown}
@@ -545,7 +562,7 @@ const PromptBox = ({setIsLoading, isLoading}) => {
                     </button>
                 </div>
                 <div className='flex items-center gap-2 relative'>
-                    <input type='file' ref={fileInputRef} onChange={handleFileChange} accept='.txt,.md,.csv,.json,.pdf,.docx,image/*' className='hidden'/>
+                    <input type='file' multiple ref={fileInputRef} onChange={handleFileChange} accept='.txt,.md,.csv,.json,.pdf,.docx,image/*' className='hidden'/>
                     <button type='button' onClick={()=> setShowUploadMenu(!showUploadMenu)} className='p-1 hover:bg-white/10 rounded-lg transition'>
                         <Image className='w-4 cursor-pointer' src={assets.pin_icon} alt='Attach file'/>
                     </button>
@@ -564,7 +581,7 @@ const PromptBox = ({setIsLoading, isLoading}) => {
                                 </span>
                                 <span>
                                     <span className='block font-medium'>Add photos &amp; files</span>
-                                    <span style={{color: 'var(--text-muted)'}} className='text-xs'>Upload from computer</span>
+                                    <span style={{color: 'var(--text-muted)'}} className='text-xs'>Up to {MAX_FILES} files, 4MB each</span>
                                 </span>
                             </button>
                             <button

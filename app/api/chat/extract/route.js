@@ -106,4 +106,3 @@ export async function POST(req) {
         return NextResponse.json({ success: false, message: "Failed to extract text: " + error.message }, { status: 500 });
     }
 }
-

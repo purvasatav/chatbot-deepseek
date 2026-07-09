@@ -92,7 +92,8 @@ function buildHistoryMessages(allMessages) {
 export async function POST(req) {
     try {
         const { userId } = getAuth(req);
-        const { chatId, prompt, imageBase64, useSearch, fileMeta } = await req.json();
+        // Accept both the old single `fileMeta` (backward compatible) and the new `fileMetas` array
+        const { chatId, prompt, imageBase64, useSearch, fileMeta, fileMetas } = await req.json();
 
         if (!userId) {
             return NextResponse.json({ success: false, message: "User not authenticated" }, { status: 401 });
@@ -105,11 +106,23 @@ export async function POST(req) {
         }
 
         const userPrompt = { role: "user", content: prompt, timestamp: Date.now() };
-        if (fileMeta) {
-            userPrompt.fileName = fileMeta.fileName;
-            userPrompt.fileData = fileMeta.fileData;
-            userPrompt.fileType = fileMeta.fileType;
+
+        // Normalize all attachments into a single array, regardless of which field the client sent
+        const attachments = [
+            ...(Array.isArray(fileMetas) ? fileMetas : []),
+            ...(fileMeta ? [fileMeta] : [])
+        ].filter(Boolean);
+
+        if (attachments.length) {
+            // New multi-file field
+            userPrompt.attachments = attachments;
+            // Keep legacy single-file fields populated too (first attachment),
+            // so any existing UI/code still reading fileName/fileData/fileType keeps working
+            userPrompt.fileName = attachments[0].fileName;
+            userPrompt.fileData = attachments[0].fileData;
+            userPrompt.fileType = attachments[0].fileType;
         }
+
         data.messages.push(userPrompt);
 
         // Give the chat an instant fallback title synchronously (no blocking AI call).
