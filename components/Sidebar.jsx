@@ -47,7 +47,7 @@ const Sidebar = ({expand, setExpand}) => {
             </div>
         </div>
 
-        <button onClick={()=> setSelectedChat(null)} style={{color: 'var(--text-primary)'}} className='flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/10 transition text-sm mb-2'>
+        <button data-new-chat-btn onClick={()=> setSelectedChat(null)} style={{color: 'var(--text-primary)'}} className='flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/10 transition text-sm mb-2'>
             <Image className='w-5' src={assets.chat_icon} alt=''/>
             {expand && <span>New chat</span>}
         </button>

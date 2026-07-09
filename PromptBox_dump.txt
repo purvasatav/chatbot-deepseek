@@ -3,36 +3,15 @@ import { useAppContext } from '@/context/AppContext';
 import { useAuth } from '@clerk/nextjs';
 import axios from 'axios';
 import Image from 'next/image'
-import React, { useRef, useState, useEffect } from 'react'
+import React, { useRef, useState } from 'react'
 import toast from 'react-hot-toast';
 
 const IMAGE_INTENT_REGEX = /\b(generate|create|draw|make|design|paint)\b[^.?!]{0,25}\b(image|picture|photo|drawing|illustration|artwork|wallpaper|logo|icon|painting)\b/i;
 
-// Safe emoji constants - built from Unicode escapes instead of literal
-// characters so they can never get mangled by terminal/console encoding
-// (Windows PowerShell, cmd.exe, etc. often aren't UTF-8 by default).
-const ICON = {
-    paperclip: "\uD83D\uDCCE",
-    close: "\u2715",
-    picture: "\uD83D\uDDBC\uFE0F",
-    research: "\uD83D\uDD0E",
-    palette: "\uD83C\uDFA8",
-    mic: "\uD83C\uDFA4",
-};
-const EM_DASH = "\u2014";
-
-// Vercel's serverless functions hard-cap request bodies at 4.5MB.
-// We block anything over 4MB client-side to leave headroom for the
-// rest of the multipart payload, and to show a clear message instead
-// of a cryptic 413 error from the server.
-const MAX_FILE_SIZE = 4 * 1024 * 1024; // 4MB
-
 const PromptBox = ({setIsLoading, isLoading}) => {
 
     const [prompt, setPrompt] = useState('');
-    const promptRef = useRef('');
-    useEffect(() => { promptRef.current = prompt; }, [prompt]);
-    const {user, chats, setChats, selectedChat, setSelectedChat, createNewChat} = useAppContext();
+    const {user, chats, setChats, selectedChat, setSelectedChat} = useAppContext();
     const {getToken} = useAuth();
     const isSendingRef = useRef(false);
     const [attachedFile, setAttachedFile] = useState(null);
@@ -47,29 +26,8 @@ const PromptBox = ({setIsLoading, isLoading}) => {
     const [isResearching, setIsResearching] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
     const abortControllerRef = useRef(null);
-    const menuRef = useRef(null);
-
-    // Close the upload menu on outside click, so it behaves like a real menu.
-    useEffect(() => {
-        if (!showUploadMenu) return;
-        const handleClickOutside = (e) => {
-            if (menuRef.current && !menuRef.current.contains(e.target)) {
-                setShowUploadMenu(false);
-            }
-        };
-        document.addEventListener('mousedown', handleClickOutside);
-        return () => document.removeEventListener('mousedown', handleClickOutside);
-    }, [showUploadMenu]);
 
     const startVoiceInput = () => {
-        if (!selectedChat) {
-            toast.error("Hang on, your chat is still loading.");
-            return;
-        }
-        if (!window.isSecureContext) {
-            toast.error(`Voice input needs HTTPS or localhost ${EM_DASH} it won't work over a plain network IP.`);
-            return;
-        }
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SpeechRecognition) {
             toast.error("Voice input isn't supported in this browser. Try Chrome.");
@@ -79,49 +37,20 @@ const PromptBox = ({setIsLoading, isLoading}) => {
             recognitionRef.current?.stop();
             return;
         }
-        if (!navigator.onLine) {
-            toast.error(`You're offline ${EM_DASH} voice input needs an internet connection.`);
-            return;
-        }
-        const MAX_RETRIES = 3;
         const recognition = new SpeechRecognition();
         recognition.lang = 'en-US';
-        recognition.interimResults = true;
-        recognition.maxAlternatives = 3;
-        recognition._retryCount = 0;
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
+
         recognition.onstart = () => setIsListening(true);
         recognition.onend = () => setIsListening(false);
-        recognition.onerror = (event) => {
-            setIsListening(false);
-            if (event.error === 'network' && recognition._retryCount < MAX_RETRIES) {
-                recognition._retryCount += 1;
-                recognitionRef.current = recognition;
-                const delay = 300 * recognition._retryCount;
-                setTimeout(() => {
-                    try { recognition.start(); } catch (e) { /* ignore */ }
-                }, delay);
-                return;
-            }
-            const reasons = {
-                'not-allowed': "Microphone access was denied. Allow mic permission in your browser settings.",
-                'service-not-allowed': "Microphone access was denied. Allow mic permission in your browser settings.",
-                'no-speech': "No speech detected \u2014 try again.",
-                'audio-capture': "No microphone was found.",
-                'network': "Voice input couldn't reach the speech service \u2014 check your connection or try disabling ad blockers.",
-                'aborted': "Voice input was cancelled.",
-            };
-            toast.error(reasons[event.error] || `Voice input error: ${event.error}`);
-        };
+        recognition.onerror = () => { setIsListening(false); toast.error("Voice input error"); };
         recognition.onresult = (event) => {
-            const result = event.results[event.results.length - 1];
-            const transcript = result[0].transcript;
-            const combined = promptRef.current ? `${promptRef.current} ${transcript}` : transcript;
-            setPrompt(combined);
-            if (result.isFinal) {
-                toast.success("Voice captured");
-                sendPrompt({ preventDefault: () => {} }, combined);
-            }
+            const transcript = event.results[0][0].transcript;
+            setPrompt((prev) => prev ? `${prev} ${transcript}` : transcript);
+            toast.success("Voice captured");
         };
+
         recognitionRef.current = recognition;
         recognition.start();
     };
@@ -129,13 +58,6 @@ const PromptBox = ({setIsLoading, isLoading}) => {
     const handleFileChange = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
-
-        if (file.size > MAX_FILE_SIZE) {
-            toast.error(`"${file.name}" is too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Please upload files under 4MB.`);
-            e.target.value = '';
-            return;
-        }
-
         const name = file.name.toLowerCase();
 
         try {
@@ -144,13 +66,7 @@ const PromptBox = ({setIsLoading, isLoading}) => {
             if (file.type.startsWith("image/")) {
                 const reader = new FileReader();
                 reader.onload = (ev) => {
-                    setAttachedFile({
-                        name: file.name,
-                        type: 'image',
-                        content: ev.target.result,
-                        fileData: ev.target.result,
-                        fileType: file.type
-                    });
+                    setAttachedFile({ name: file.name, type: 'image', content: ev.target.result });
                     toast.success(`Attached: ${file.name}`);
                     setIsProcessingFile(false);
                 };
@@ -188,20 +104,9 @@ const PromptBox = ({setIsLoading, isLoading}) => {
             } else {
                 const reader = new FileReader();
                 reader.onload = (ev) => {
-                    const textContent = ev.target.result;
-                    const dataReader = new FileReader();
-                    dataReader.onload = (ev2) => {
-                        setAttachedFile({
-                            name: file.name,
-                            type: 'text',
-                            content: textContent,
-                            fileData: ev2.target.result,
-                            fileType: file.type || 'text/plain'
-                        });
-                        toast.success(`Attached: ${file.name}`);
-                        setIsProcessingFile(false);
-                    };
-                    dataReader.readAsDataURL(file);
+                    setAttachedFile({ name: file.name, type: 'text', content: ev.target.result });
+                    toast.success(`Attached: ${file.name}`);
+                    setIsProcessingFile(false);
                 };
                 reader.readAsText(file);
             }
@@ -224,23 +129,17 @@ const PromptBox = ({setIsLoading, isLoading}) => {
         }
     };
 
-    const sendPrompt = async (e, overrideText)=>{
+    const sendPrompt = async (e)=>{
         e.preventDefault();
         if(isSendingRef.current) return;
 
-        const promptCopy = overrideText !== undefined ? overrideText : prompt;
+        const promptCopy = prompt;
         try {
             if(!user) return toast.error('Login to send message');
-            let activeChat = selectedChat;
-            if(!activeChat){
-                activeChat = await createNewChat();
-                if(!activeChat) return toast.error('Could not start a new chat');
-                setChats((prev)=> [activeChat, ...prev]);
-                setSelectedChat(activeChat);
-            }
+            if(!selectedChat) return toast.error('No chat selected');
             if(isLoading) return toast.error('Wait for the previous prompt response');
             if(isProcessingFile) return toast.error('Wait for the file to finish processing');
-            if(!promptCopy.trim()) return;
+            if(!prompt.trim()) return;
 
             isSendingRef.current = true;
             setIsLoading(true)
@@ -257,7 +156,7 @@ const PromptBox = ({setIsLoading, isLoading}) => {
                 } : {})
             }
 
-            setChats((prevChats)=> prevChats.map((chat)=> chat._id === activeChat._id ?
+            setChats((prevChats)=> prevChats.map((chat)=> chat._id === selectedChat._id ?
                 { ...chat, messages: [...chat.messages, userPrompt] }
                 : chat
             ))
@@ -274,12 +173,12 @@ const PromptBox = ({setIsLoading, isLoading}) => {
                 try {
                     const token = await getToken();
                     const {data} = await axios.post('/api/chat/research', {
-                        chatId: activeChat._id,
+                        chatId: selectedChat._id,
                         prompt: promptCopy
                     }, {headers:{ Authorization: `Bearer ${token}` }});
                     if (data.success) {
                         setSelectedChat((prev) => ({ ...prev, messages:[...(prev?.messages || []), data.data] }));
-                        setChats((prevChats)=>prevChats.map((chat)=> chat._id === activeChat._id ? {...chat, messages: [...chat.messages, data.data]} : chat));
+                        setChats((prevChats)=>prevChats.map((chat)=> chat._id === selectedChat._id ? {...chat, messages: [...chat.messages, data.data]} : chat));
                     } else {
                         toast.error(data.message || 'Research failed');
                         setPrompt(promptCopy);
@@ -294,7 +193,7 @@ const PromptBox = ({setIsLoading, isLoading}) => {
                 return;
             }
 
-            // Image generation path: triggers on explicit imageMode toggle OR detected intent in plain text
+            // Image generation path â€” triggers on explicit imageMode toggle OR detected intent in plain text
             const autoImageIntent = !imageMode && !attachedFile && IMAGE_INTENT_REGEX.test(promptCopy);
 
             if (imageMode || autoImageIntent) {
@@ -303,14 +202,14 @@ const PromptBox = ({setIsLoading, isLoading}) => {
                 if (editImageBase64) setAttachedFile(null);
                 const token = await getToken();
                 const {data} = await axios.post('/api/chat/image', {
-                    chatId: activeChat._id,
+                    chatId: selectedChat._id,
                     prompt: promptCopy,
                     editImageBase64
                 }, {headers:{ Authorization: `Bearer ${token}` }});
                 setIsLoading(false);
                 if (data.success) {
                     setSelectedChat((prev) => ({ ...prev, messages: [...(prev?.messages || []), data.data] }));
-                    setChats((prevChats)=>prevChats.map((chat)=> chat._id === activeChat._id ? {...chat, messages: [...chat.messages, data.data]} : chat));
+                    setChats((prevChats)=>prevChats.map((chat)=> chat._id === selectedChat._id ? {...chat, messages: [...chat.messages, data.data]} : chat));
                 } else {
                     toast.error(data.message || 'Image generation failed');
                     setPrompt(promptCopy);
@@ -327,17 +226,6 @@ const PromptBox = ({setIsLoading, isLoading}) => {
                 if (attachedFile.type === 'image') {
                     imageBase64 = attachedFile.content;
                     finalPrompt = promptCopy || "Describe this image.";
-                    // Previously never set for images, so the attached image
-                    // would display locally but disappear after a page
-                    // refresh (never saved server-side). Now it's saved just
-                    // like text/PDF attachments.
-                    if (attachedFile.fileData) {
-                        fileMeta = {
-                            fileName: attachedFile.name,
-                            fileData: attachedFile.fileData,
-                            fileType: attachedFile.fileType
-                        };
-                    }
                 } else {
                     finalPrompt = `${promptCopy}\n\n[Attached file: ${attachedFile.name}]\n${attachedFile.content}`;
                     if (attachedFile.fileData) {
@@ -355,16 +243,14 @@ const PromptBox = ({setIsLoading, isLoading}) => {
             if (imageBase64) {
                 const token = await getToken();
                 const {data} = await axios.post('/api/chat/ai', {
-                    chatId: activeChat._id,
+                    chatId: selectedChat._id,
                     prompt: finalPrompt,
-                    displayPrompt: promptCopy,
-                    imageBase64,
-                    fileMeta
+                    imageBase64
                 }, {headers:{ Authorization: `Bearer ${token}` }})
                 setIsLoading(false);
                 if (data.success) {
                     setSelectedChat((prev) => ({ ...prev, messages: [...(prev?.messages || []), data.data] }));
-                    setChats((prevChats)=>prevChats.map((chat)=> chat._id === activeChat._id ? {...chat, messages: [...chat.messages, data.data]} : chat));
+                    setChats((prevChats)=>prevChats.map((chat)=> chat._id === selectedChat._id ? {...chat, messages: [...chat.messages, data.data]} : chat));
                 } else {
                     toast.error(data.message || 'Something went wrong');
                     setPrompt(promptCopy);
@@ -393,9 +279,8 @@ const PromptBox = ({setIsLoading, isLoading}) => {
                         'Authorization': `Bearer ${token}`
                     },
                     body: JSON.stringify({
-                        chatId: activeChat._id,
+                        chatId: selectedChat._id,
                         prompt: finalPrompt,
-                        displayPrompt: promptCopy,
                         useSearch,
                         fileMeta
                     }),
@@ -464,7 +349,7 @@ const PromptBox = ({setIsLoading, isLoading}) => {
             }
 
             setChats((prevChats)=>prevChats.map((chat)=>
-                chat._id === activeChat._id ?
+                chat._id === selectedChat._id ?
                 {...chat, messages: [...chat.messages, assistantMessage]} : chat
             ))
 
@@ -483,20 +368,20 @@ const PromptBox = ({setIsLoading, isLoading}) => {
         className={`w-full ${selectedChat?.messages?.length > 0 ? "max-w-3xl" : "max-w-2xl"} border p-4 rounded-3xl mt-4 transition-all`}>
             {attachedFile && (
                 <div style={{color: 'var(--text-secondary)'}} className='text-xs mb-2 flex items-center gap-2'>
-                    <span>{ICON.paperclip}</span> {attachedFile.name}
-                    <span onClick={()=>setAttachedFile(null)} className='cursor-pointer text-red-400'>{ICON.close}</span>
+                    ðŸ“Ž {attachedFile.name}
+                    <span onClick={()=>setAttachedFile(null)} className='cursor-pointer text-red-400'>âœ•</span>
                 </div>
             )}
             {imageMode && (
                 <div className='text-xs text-purple-400 mb-2 flex items-center gap-2'>
-                    <span>{ICON.picture}</span> Image mode {EM_DASH} describe what to generate{attachedFile?.type === 'image' ? ' or edit' : ''}
-                    <span onClick={()=>setImageMode(false)} className='cursor-pointer text-red-400'>{ICON.close}</span>
+                    ðŸ–¼ï¸ Image mode â€” describe what to generate{attachedFile?.type === 'image' ? ' or edit' : ''}
+                    <span onClick={()=>setImageMode(false)} className='cursor-pointer text-red-400'>âœ•</span>
                 </div>
             )}
             {researchMode && (
                 <div className='text-xs text-blue-400 mb-2 flex items-center gap-2'>
-                    <span>{ICON.research}</span> Deep research mode {EM_DASH} ask your question
-                    <span onClick={()=>setResearchMode(false)} className='cursor-pointer text-red-400'>{ICON.close}</span>
+                    ðŸ“¢ Deep research mode â€” ask your question
+                    <span onClick={()=>setResearchMode(false)} className='cursor-pointer text-red-400'>âœ•</span>
                 </div>
             )}
             {isListening && (
@@ -509,7 +394,7 @@ const PromptBox = ({setIsLoading, isLoading}) => {
                         <span className='w-0.5 h-3 bg-red-400 rounded-full animate-pulse' style={{animationDelay: '600ms'}}></span>
                     </span>
                     Recording... speak now
-                    <span onClick={()=> recognitionRef.current?.stop()} className='cursor-pointer text-red-400 ml-1'>{ICON.close} Stop</span>
+                    <span onClick={()=> recognitionRef.current?.stop()} className='cursor-pointer text-red-400 ml-1'>âœ• Stop</span>
                 </div>
             )}
             {isResearching && (
@@ -520,12 +405,12 @@ const PromptBox = ({setIsLoading, isLoading}) => {
             )}
             <textarea
             onKeyDown={handleKeyDown}
-            disabled={false}
-            placeholder="Message DeepSeek"
+            disabled={!selectedChat}
+            placeholder={!selectedChat ? "Preparing your chat..." : undefined}
             style={{color: 'var(--text-primary)'}}
             className='outline-none w-full resize-none overflow-hidden break-words bg-transparent placeholder:opacity-40'
             rows={2}
-            required
+            placeholder='Message DeepSeek' required
             onChange={(e)=> setPrompt(e.target.value)} value={prompt}/>
 
             <div className='flex items-center justify-between text-sm'>
@@ -546,69 +431,41 @@ const PromptBox = ({setIsLoading, isLoading}) => {
                 </div>
                 <div className='flex items-center gap-2 relative'>
                     <input type='file' ref={fileInputRef} onChange={handleFileChange} accept='.txt,.md,.csv,.json,.pdf,.docx,image/*' className='hidden'/>
-                    <button type='button' onClick={()=> setShowUploadMenu(!showUploadMenu)} className='p-1 hover:bg-white/10 rounded-lg transition'>
+                    <button type='button' onClick={()=> setShowUploadMenu(!showUploadMenu)} className='p-1 hover:bg-white/10 rounded-lg'>
                         <Image className='w-4 cursor-pointer' src={assets.pin_icon} alt='Attach file'/>
                     </button>
                     {showUploadMenu && (
-                        <div
-                        ref={menuRef}
-                        style={{backgroundColor: 'var(--bg-surface-2)', borderColor: 'var(--border-color)', color: 'var(--text-primary)'}}
-                        className='absolute bottom-11 left-0 border rounded-2xl w-72 py-2 shadow-2xl z-50 overflow-hidden'>
-                            <button
-                            type='button'
-                            onClick={()=>{ fileInputRef.current.click(); setShowUploadMenu(false); }}
-                            className='w-full text-left px-3 py-2.5 text-sm hover:bg-white/10 transition-colors flex items-center gap-3 rounded-xl mx-1 my-0.5'
-                            style={{width: 'calc(100% - 0.5rem)'}}>
-                                <span className='shrink-0 w-9 h-9 rounded-full bg-blue-500/15 text-blue-400 flex items-center justify-center text-base'>
-                                    {ICON.paperclip}
-                                </span>
-                                <span>
-                                    <span className='block font-medium'>Add photos &amp; files</span>
-                                    <span style={{color: 'var(--text-muted)'}} className='text-xs'>Upload from computer</span>
-                                </span>
+                        <div style={{backgroundColor: 'var(--bg-surface-2)', borderColor: 'var(--border-color)', color: 'var(--text-primary)'}} className='absolute bottom-10 left-0 border rounded-xl w-64 py-2 shadow-xl z-50'>
+                            <button type='button' onClick={()=>{ fileInputRef.current.click(); setShowUploadMenu(false); }} className='w-full text-left px-4 py-2.5 text-sm hover:bg-white/10 flex items-center gap-3'>
+                                ðŸ“Ž <span>Add photos & files<br/><span style={{color: 'var(--text-muted)'}} className='text-xs'>Upload from computer</span></span>
                             </button>
-                            <button
-                            type='button'
-                            onClick={()=>{ setImageMode(true); setShowUploadMenu(false); }}
-                            className='w-full text-left px-3 py-2.5 text-sm hover:bg-white/10 transition-colors flex items-center gap-3 rounded-xl mx-1 my-0.5'
-                            style={{width: 'calc(100% - 0.5rem)'}}>
-                                <span className='shrink-0 w-9 h-9 rounded-full bg-purple-500/15 text-purple-400 flex items-center justify-center text-base'>
-                                    {ICON.palette}
-                                </span>
-                                <span>
-                                    <span className='block font-medium'>Generate image</span>
-                                    <span style={{color: 'var(--text-muted)'}} className='text-xs'>Create an image with AI</span>
-                                </span>
+                            <button type='button' onClick={()=>{ setImageMode(true); setShowUploadMenu(false); }} className='w-full text-left px-4 py-2.5 text-sm hover:bg-white/10 flex items-center gap-3'>
+                                ðŸŒ <span>Create image<br/><span style={{color: 'var(--text-muted)'}} className='text-xs'>Generate an image from text</span></span>
                             </button>
-                            <button
-                            type='button'
-                            onClick={()=>{ setResearchMode(true); setShowUploadMenu(false); }}
-                            className='w-full text-left px-3 py-2.5 text-sm hover:bg-white/10 transition-colors flex items-center gap-3 rounded-xl mx-1 my-0.5'
-                            style={{width: 'calc(100% - 0.5rem)'}}>
-                                <span className='shrink-0 w-9 h-9 rounded-full bg-cyan-500/15 text-cyan-400 flex items-center justify-center text-base'>
-                                    {ICON.research}
-                                </span>
-                                <span>
-                                    <span className='block font-medium'>Deep research</span>
-                                    <span style={{color: 'var(--text-muted)'}} className='text-xs'>Search multiple sources</span>
-                                </span>
+                            <button type='button' onClick={()=>{ setResearchMode(true); setShowUploadMenu(false); toast.success("Deep research mode on â€” ask your question"); }} className='w-full text-left px-4 py-2.5 text-sm hover:bg-white/10 flex items-center gap-3'>
+                                ðŸ“¢ <span>Deep research<br/><span style={{color: 'var(--text-muted)'}} className='text-xs'>Multi-source search & report</span></span>
                             </button>
                         </div>
                     )}
-                    <button type='button' onClick={startVoiceInput} disabled={false} className='p-1 hover:bg-white/10 rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed'>
-                        <span className={`text-lg ${isListening ? 'text-red-400' : ''}`}>{ICON.mic}</span>
+                    <button
+                        type='button'
+                        onClick={startVoiceInput}
+                        title={isListening ? 'Stop recording' : 'Start voice input'}
+                        className={`p-2 rounded-full transition flex items-center justify-center w-8 h-8 ${isListening ? 'bg-red-500' : 'hover:bg-white/10'}`}
+                    >
+                        {isListening ? (
+                            <span className='w-2.5 h-2.5 bg-white rounded-sm'></span>
+                        ) : (
+                            <span className='text-base leading-none'>ðŸŽ¤</span>
+                        )}
                     </button>
                     {isStreaming ? (
-                        <button type='button' onClick={handleStopGenerating} className='bg-red-500 rounded-full p-2 cursor-pointer hover:opacity-90'>
-                            <span className='text-white text-xs px-1'>{"\u25FC"}</span>
+                        <button type='button' onClick={handleStopGenerating} className='rounded-full p-2 bg-white text-black hover:bg-white/80 transition' title='Stop generating'>
+                            <span className='block w-3.5 h-3.5 bg-black rounded-sm'></span>
                         </button>
                     ) : (
-                        <button
-                            type='submit'
-                            disabled={isLoading || !prompt.trim()}
-                            className={`${prompt.trim() && selectedChat? 'bg-primary' : 'bg-gray-400/40'} rounded-full p-2 cursor-pointer disabled:cursor-not-allowed`}
-                        >
-                            <Image className='w-3.5 aspect-square' src={prompt.trim() ? assets.arrow_icon : assets.arrow_icon_dull} alt=''/>
+                        <button type='submit' disabled={isLoading || isProcessingFile || !selectedChat} className={`${prompt ? "bg-primary" : "bg-[#71717a]"} rounded-full p-2 cursor-pointer`}>
+                            <Image className='w-3.5 aspect-square' src={prompt ? assets.arrow_icon : assets.arrow_icon_dull} alt=''/>
                         </button>
                     )}
                 </div>
@@ -617,4 +474,4 @@ const PromptBox = ({setIsLoading, isLoading}) => {
     )
 }
 
-export default PromptBox;
+export default PromptBox

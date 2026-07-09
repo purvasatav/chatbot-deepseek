@@ -1,0 +1,18 @@
+HTTP/1.1 200 OK
+Content-Type: image/jpeg
+Content-Length: 85977
+Connection: keep-alive
+Date: Wed, 08 Jul 2026 15:17:05 GMT
+Server: cloudflare
+Access-Control-Allow-Origin: *
+Cache-Control: public, max-age=31536000, immutable
+Content-Disposition: inline; filename="test.jpg"
+CF-RAY: a1800dc08b82a09b-BOM
+X-Cache-Type: EXACT
+X-Cache: Miss from cloudfront
+Via: 1.1 8218162abe2cae3ec1ec6855d835c406.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: BOM78-P6
+X-Amz-Cf-Id: Hc3XfjBmegRdQ-mqzqctRSfs24W6XC_Mplihag07W68hes755Wjuqw==
+X-Content-Type-Options: nosniff
+Vary: Accept-Encoding
+
