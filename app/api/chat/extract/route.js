@@ -1,4 +1,4 @@
-﻿import { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import mammoth from "mammoth";
 import { createWorker } from "tesseract.js";
 
@@ -6,7 +6,12 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 async function ocrImageBuffer(buffer) {
-    const worker = await createWorker("eng");
+    // On Vercel serverless, only /tmp is writable - Tesseract.js needs
+    // cachePath explicitly set there, or it tries to write to the app
+    // bundle directory (read-only) and crashes with a generic 500.
+    const worker = await createWorker("eng", 1, {
+        cachePath: "/tmp",
+    });
     const { data } = await worker.recognize(buffer);
     await worker.terminate();
     return data.text;
