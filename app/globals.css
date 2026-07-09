@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #4d6bfe;
+}
+
+:root {
+  --bg-app: #292a2d;
+  --bg-sidebar: #000000;
+  --bg-surface: #404045;
+  --bg-surface-2: #3a3a40;
+  --bg-user-bubble: #414158;
+  --text-primary: #ffffff;
+  --text-secondary: rgba(255, 255, 255, 0.7);
+  --text-muted: rgba(255, 255, 255, 0.4);
+  --border-color: rgba(255, 255, 255, 0.1);
+}
+
+html.light {
+  --bg-app: #f5f5f7;
+  --bg-sidebar: #ffffff;
+  --bg-surface: #ffffff;
+  --bg-surface-2: #eef0f2;
+  --bg-user-bubble: #e7e9fb;
+  --text-primary: #1a1a1a;
+  --text-secondary: rgba(0, 0, 0, 0.65);
+  --text-muted: rgba(0, 0, 0, 0.4);
+  --border-color: rgba(0, 0, 0, 0.1);
+}
+
+html{
+  @apply scroll-smooth;
+}
+
+html, body {
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+}
+
+::-webkit-scrollbar{
+  display: none;
+}
+.loader div:nth-child(2){
+  animation-delay: 0.2s;
+}
+.loader div:nth-child(3){
+  animation-delay: 0.4s;
+}
+
+code{
+  white-space: pre-wrap !important;
+}
+
+pre{
+  border-radius: 10px !important;
+}

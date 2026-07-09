@@ -1,0 +1,40 @@
+{
+  "name": "deepseek-clone",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@clerk/nextjs": "^6.12.4",
+    "@napi-rs/canvas": "^1.0.2",
+    "axios": "^1.8.3",
+    "mammoth": "^1.8.0",
+    "mongodb": "^7.5.0",
+    "mongoose": "^8.12.1",
+    "next": "15.5.20",
+    "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "^6.1.200",
+    "prismjs": "^1.30.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-hot-toast": "^2.5.2",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.0",
+    "svix": "^1.61.4",
+    "tesseract.js": "^5.1.1"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "eslint": "^9",
+    "eslint-config-next": "15.5.20",
+    "tailwindcss": "^4"
+  },
+  "allowScripts": {
+    "canvas@3.2.3": true
+  }
+}
