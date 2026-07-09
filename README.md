@@ -73,3 +73,4 @@ This app is designed to deploy easily on [Vercel](https://vercel.com). Make sure
 ## License
 
 Personal project — not licensed for redistribution.
+<!-- trigger deploy -->
