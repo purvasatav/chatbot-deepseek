@@ -3,6 +3,15 @@ import mammoth from "mammoth";
 import path from "path";
 import { createWorker } from "tesseract.js";
 
+// Statically importing the worker script (rather than relying on pdfjs's own
+// internal dynamic string-based import of it) forces Next's serverless
+// file-tracer to detect and include the physical file in the deployed
+// function bundle. A dynamic import built from a runtime string (which is
+// what pdfjs does internally, and what workerSrc alone doesn't fix) is
+// invisible to the tracer - this static import is what actually gets the
+// file copied into the Vercel bundle.
+import "pdfjs-dist/legacy/build/pdf.worker.mjs";
+
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
