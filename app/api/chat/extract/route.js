@@ -1,143 +1,52 @@
 import { NextResponse } from "next/server";
 import mammoth from "mammoth";
-import path from "path";
-import { createWorker } from "tesseract.js";
-
-// Statically importing the worker script (rather than relying on pdfjs's own
-// internal dynamic string-based import of it) forces Next's serverless
-// file-tracer to detect and include the physical file in the deployed
-// function bundle. A dynamic import built from a runtime string (which is
-// what pdfjs does internally, and what workerSrc alone doesn't fix) is
-// invisible to the tracer - this static import is what actually gets the
-// file copied into the Vercel bundle.
-import "pdfjs-dist/legacy/build/pdf.worker.mjs";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-// Tesseract worker options shared everywhere - PSM 6 ("assume a single
-// uniform block of text") skips some of Tesseract's more expensive
-// layout-analysis steps compared to the default auto page segmentation,
-// which speeds things up for typical scanned documents/certificates.
-const OCR_WORKER_OPTIONS = {
-    cachePath: "/tmp",
-};
-const OCR_PARAMS = {
-    tessedit_pageseg_mode: "6",
-};
+const OCR_SPACE_ENDPOINT = "https://api.ocr.space/parse/image";
 
-// Used for standalone image uploads (creates + tears down its own worker).
-async function ocrImageBuffer(buffer) {
-    const worker = await createWorker("eng", 1, OCR_WORKER_OPTIONS);
-    try {
-        await worker.setParameters(OCR_PARAMS);
-        const { data } = await worker.recognize(buffer);
-        return data.text;
-    } finally {
-        await worker.terminate();
-    }
-}
-
-// Used for scanned-PDF pages: takes an already-running worker so we don't
-// pay the worker init/teardown cost on every single page.
-async function ocrImageBufferWithWorker(worker, buffer) {
-    const { data } = await worker.recognize(buffer);
-    return data.text;
-}
-
-// pdfjs-dist's page.render() assumes a browser environment (DOMMatrix,
-// Path2D, ImageData, and a CanvasFactory that returns real <canvas>-like
-// objects), and it also needs its worker script (pdf.worker.mjs) at runtime.
-// On Vercel's serverless bundle, none of that exists/resolves automatically,
-// so we polyfill the globals, point workerSrc directly at the on-disk file,
-// and supply a custom CanvasFactory.
-async function ocrScannedPdf(buffer) {
-    const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    const { createCanvas, DOMMatrix, Path2D, ImageData } = await import("@napi-rs/canvas");
-
-    // Point pdfjs directly at the worker file's on-disk location instead of
-    // letting it dynamically resolve the path itself (that internal
-    // resolution is what fails on Vercel's serverless bundle).
-    pdfjsLib.GlobalWorkerOptions.workerSrc = path.join(
-        process.cwd(),
-        "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"
-    );
-
-    // Polyfill globals pdfjs-dist expects to exist (normally provided by the browser).
-    if (typeof globalThis.DOMMatrix === "undefined") globalThis.DOMMatrix = DOMMatrix;
-    if (typeof globalThis.Path2D === "undefined") globalThis.Path2D = Path2D;
-    if (typeof globalThis.ImageData === "undefined") globalThis.ImageData = ImageData;
-
-    class NodeCanvasFactory {
-        create(width, height) {
-            const canvas = createCanvas(width, height);
-            const context = canvas.getContext("2d");
-            return { canvas, context };
-        }
-        reset(canvasAndContext, width, height) {
-            canvasAndContext.canvas.width = width;
-            canvasAndContext.canvas.height = height;
-        }
-        destroy(canvasAndContext) {
-            canvasAndContext.canvas.width = 0;
-            canvasAndContext.canvas.height = 0;
-            canvasAndContext.canvas = null;
-            canvasAndContext.context = null;
-        }
+// Runs OCR via the OCR.space REST API instead of a local engine like
+// Tesseract.js. This avoids bundling native binaries (tesseract.js,
+// @napi-rs/canvas, pdfjs-dist) which are fragile on Vercel's serverless
+// runtime and were causing silent crashes in production.
+async function ocrWithOcrSpace(buffer, filename, mimeType) {
+    const apiKey = process.env.OCR_SPACE_API_KEY;
+    if (!apiKey) {
+        throw new Error("OCR_SPACE_API_KEY is not set");
     }
 
-    const loadingTask = pdfjsLib.getDocument({
-        data: new Uint8Array(buffer),
-        useWorkerFetch: false,
-        isEvalSupported: false,
-        useSystemFonts: true,
-        canvasFactory: new NodeCanvasFactory(),
+    const formData = new FormData();
+    const blob = new Blob([buffer], { type: mimeType });
+    formData.append("file", blob, filename);
+    formData.append("apikey", apiKey);
+    formData.append("language", "eng");
+    formData.append("isOverlayRequired", "false");
+    formData.append("OCREngine", "2");
+    formData.append("scale", "true");
+
+    const response = await fetch(OCR_SPACE_ENDPOINT, {
+        method: "POST",
+        body: formData,
     });
-    const pdfDocument = await loadingTask.promise;
 
-    // Reduced from 15 - most OCR needs are short documents, and this keeps
-    // total processing time well within Vercel's function time limit.
-    const MAX_PAGES = 8;
-    const pageCount = Math.min(pdfDocument.numPages, MAX_PAGES);
-    let fullText = "";
-
-    // One shared Tesseract worker for the entire document - avoids paying
-    // worker init/teardown cost on every page, which was the biggest single
-    // time cost on multi-page scans.
-    const ocrWorker = await createWorker("eng", 1, OCR_WORKER_OPTIONS);
-    await ocrWorker.setParameters(OCR_PARAMS);
-
-    try {
-        for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
-            const page = await pdfDocument.getPage(pageNum);
-            // Scale reduced from 2.0 -> 1.5 -> 1.2 - still sharp enough for
-            // accurate OCR on typical scanned certificates/documents, but
-            // meaningfully less pixel data to render and recognize per page.
-            const viewport = page.getViewport({ scale: 1.2 });
-            const canvasFactory = new NodeCanvasFactory();
-            const canvasAndContext = canvasFactory.create(viewport.width, viewport.height);
-
-            await page.render({
-                canvasContext: canvasAndContext.context,
-                viewport,
-                canvasFactory,
-            }).promise;
-
-            const pageBuffer = canvasAndContext.canvas.toBuffer("image/png");
-            const pageText = await ocrImageBufferWithWorker(ocrWorker, pageBuffer);
-            fullText += pageText.trim() + "\n\n";
-
-            canvasFactory.destroy(canvasAndContext);
-        }
-    } finally {
-        await ocrWorker.terminate();
+    if (!response.ok) {
+        throw new Error(`OCR.space request failed with status ${response.status}`);
     }
 
-    if (pdfDocument.numPages > MAX_PAGES) {
-        fullText += `\n[Only the first ${MAX_PAGES} of ${pdfDocument.numPages} pages were processed]`;
+    const result = await response.json();
+
+    if (result.IsErroredOnProcessing) {
+        const message = Array.isArray(result.ErrorMessage)
+            ? result.ErrorMessage.join(", ")
+            : (result.ErrorMessage || "Unknown OCR.space error");
+        throw new Error(message);
     }
 
-    return fullText.trim();
+    const parsedResults = result.ParsedResults || [];
+    const text = parsedResults.map((r) => r.ParsedText || "").join("\n\n").trim();
+
+    return text;
 }
 
 export async function POST(req) {
@@ -161,16 +70,13 @@ export async function POST(req) {
 
             if (!text || text.length < 20) {
                 try {
-                    text = await ocrScannedPdf(buffer);
+                    text = await ocrWithOcrSpace(buffer, file.name, "application/pdf");
                     usedOcr = true;
                 } catch (ocrError) {
                     console.error("Scanned-PDF OCR error:", ocrError);
-                    // TEMP DEBUG: surfacing the real error message directly in the
-                    // response so we can confirm the fix without pulling logs.
-                    // Revert to a clean user-facing message once confirmed working.
                     return NextResponse.json({
                         success: false,
-                        message: `OCR failed: ${ocrError?.message || String(ocrError)}`
+                        message: "This PDF appears to be scanned, and OCR on it failed. Try exporting/printing individual pages as images (PNG/JPG) and uploading those instead - image OCR is fully supported."
                     });
                 }
             }
@@ -178,8 +84,16 @@ export async function POST(req) {
             const result = await mammoth.extractRawText({ buffer });
             text = result.value;
         } else if (name.match(/\.(jpg|jpeg|png|webp|bmp)$/)) {
-            text = await ocrImageBuffer(buffer);
-            usedOcr = true;
+            try {
+                text = await ocrWithOcrSpace(buffer, file.name, file.type || "image/png");
+                usedOcr = true;
+            } catch (ocrError) {
+                console.error("Image OCR error:", ocrError);
+                return NextResponse.json({
+                    success: false,
+                    message: "Failed to extract text from this image via OCR. Please try a clearer image or a different file."
+                });
+            }
         } else {
             return NextResponse.json({ success: false, message: "Unsupported file type" }, { status: 400 });
         }
