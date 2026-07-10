@@ -15,12 +15,23 @@ import "pdfjs-dist/legacy/build/pdf.worker.mjs";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
+// Used for standalone image uploads (creates + tears down its own worker).
 async function ocrImageBuffer(buffer) {
     const worker = await createWorker("eng", 1, {
         cachePath: "/tmp",
     });
+    try {
+        const { data } = await worker.recognize(buffer);
+        return data.text;
+    } finally {
+        await worker.terminate();
+    }
+}
+
+// Used for scanned-PDF pages: takes an already-running worker so we don't
+// pay the worker init/teardown cost on every single page.
+async function ocrImageBufferWithWorker(worker, buffer) {
     const { data } = await worker.recognize(buffer);
-    await worker.terminate();
     return data.text;
 }
 
@@ -74,27 +85,40 @@ async function ocrScannedPdf(buffer) {
     });
     const pdfDocument = await loadingTask.promise;
 
-    const MAX_PAGES = 15;
+    // Reduced from 15 - most OCR needs are short documents, and this keeps
+    // total processing time well within Vercel's function time limit.
+    const MAX_PAGES = 8;
     const pageCount = Math.min(pdfDocument.numPages, MAX_PAGES);
     let fullText = "";
 
-    for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
-        const page = await pdfDocument.getPage(pageNum);
-        const viewport = page.getViewport({ scale: 2.0 });
-        const canvasFactory = new NodeCanvasFactory();
-        const canvasAndContext = canvasFactory.create(viewport.width, viewport.height);
+    // One shared Tesseract worker for the entire document - avoids paying
+    // worker init/teardown cost on every page, which was the biggest single
+    // time cost on multi-page scans.
+    const ocrWorker = await createWorker("eng", 1, { cachePath: "/tmp" });
 
-        await page.render({
-            canvasContext: canvasAndContext.context,
-            viewport,
-            canvasFactory,
-        }).promise;
+    try {
+        for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
+            const page = await pdfDocument.getPage(pageNum);
+            // Scale reduced from 2.0 to 1.5 - still sharp enough for accurate
+            // OCR, but meaningfully less pixel data to render and recognize.
+            const viewport = page.getViewport({ scale: 1.5 });
+            const canvasFactory = new NodeCanvasFactory();
+            const canvasAndContext = canvasFactory.create(viewport.width, viewport.height);
 
-        const pageBuffer = canvasAndContext.canvas.toBuffer("image/png");
-        const pageText = await ocrImageBuffer(pageBuffer);
-        fullText += pageText.trim() + "\n\n";
+            await page.render({
+                canvasContext: canvasAndContext.context,
+                viewport,
+                canvasFactory,
+            }).promise;
 
-        canvasFactory.destroy(canvasAndContext);
+            const pageBuffer = canvasAndContext.canvas.toBuffer("image/png");
+            const pageText = await ocrImageBufferWithWorker(ocrWorker, pageBuffer);
+            fullText += pageText.trim() + "\n\n";
+
+            canvasFactory.destroy(canvasAndContext);
+        }
+    } finally {
+        await ocrWorker.terminate();
     }
 
     if (pdfDocument.numPages > MAX_PAGES) {
