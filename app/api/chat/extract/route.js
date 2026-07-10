@@ -15,12 +15,22 @@ import "pdfjs-dist/legacy/build/pdf.worker.mjs";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
+// Tesseract worker options shared everywhere - PSM 6 ("assume a single
+// uniform block of text") skips some of Tesseract's more expensive
+// layout-analysis steps compared to the default auto page segmentation,
+// which speeds things up for typical scanned documents/certificates.
+const OCR_WORKER_OPTIONS = {
+    cachePath: "/tmp",
+};
+const OCR_PARAMS = {
+    tessedit_pageseg_mode: "6",
+};
+
 // Used for standalone image uploads (creates + tears down its own worker).
 async function ocrImageBuffer(buffer) {
-    const worker = await createWorker("eng", 1, {
-        cachePath: "/tmp",
-    });
+    const worker = await createWorker("eng", 1, OCR_WORKER_OPTIONS);
     try {
+        await worker.setParameters(OCR_PARAMS);
         const { data } = await worker.recognize(buffer);
         return data.text;
     } finally {
@@ -94,14 +104,16 @@ async function ocrScannedPdf(buffer) {
     // One shared Tesseract worker for the entire document - avoids paying
     // worker init/teardown cost on every page, which was the biggest single
     // time cost on multi-page scans.
-    const ocrWorker = await createWorker("eng", 1, { cachePath: "/tmp" });
+    const ocrWorker = await createWorker("eng", 1, OCR_WORKER_OPTIONS);
+    await ocrWorker.setParameters(OCR_PARAMS);
 
     try {
         for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
             const page = await pdfDocument.getPage(pageNum);
-            // Scale reduced from 2.0 to 1.5 - still sharp enough for accurate
-            // OCR, but meaningfully less pixel data to render and recognize.
-            const viewport = page.getViewport({ scale: 1.5 });
+            // Scale reduced from 2.0 -> 1.5 -> 1.2 - still sharp enough for
+            // accurate OCR on typical scanned certificates/documents, but
+            // meaningfully less pixel data to render and recognize per page.
+            const viewport = page.getViewport({ scale: 1.2 });
             const canvasFactory = new NodeCanvasFactory();
             const canvasAndContext = canvasFactory.create(viewport.width, viewport.height);
 
