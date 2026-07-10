@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import mammoth from "mammoth";
+import path from "path";
 import { createWorker } from "tesseract.js";
 
 export const runtime = "nodejs";
@@ -16,12 +17,21 @@ async function ocrImageBuffer(buffer) {
 
 // pdfjs-dist's page.render() assumes a browser environment (DOMMatrix,
 // Path2D, ImageData, and a CanvasFactory that returns real <canvas>-like
-// objects). None of that exists in Node by default, so without these
-// polyfills + a custom CanvasFactory, rendering throws internally and
-// gets swallowed by the outer try/catch as a generic "OCR failed".
+// objects), and it also needs its worker script (pdf.worker.mjs) at runtime.
+// On Vercel's serverless bundle, none of that exists/resolves automatically,
+// so we polyfill the globals, point workerSrc directly at the on-disk file,
+// and supply a custom CanvasFactory.
 async function ocrScannedPdf(buffer) {
     const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
     const { createCanvas, DOMMatrix, Path2D, ImageData } = await import("@napi-rs/canvas");
+
+    // Point pdfjs directly at the worker file's on-disk location instead of
+    // letting it dynamically resolve the path itself (that internal
+    // resolution is what fails on Vercel's serverless bundle).
+    pdfjsLib.GlobalWorkerOptions.workerSrc = path.join(
+        process.cwd(),
+        "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"
+    );
 
     // Polyfill globals pdfjs-dist expects to exist (normally provided by the browser).
     if (typeof globalThis.DOMMatrix === "undefined") globalThis.DOMMatrix = DOMMatrix;
@@ -111,10 +121,8 @@ export async function POST(req) {
                 } catch (ocrError) {
                     console.error("Scanned-PDF OCR error:", ocrError);
                     // TEMP DEBUG: surfacing the real error message directly in the
-                    // response so we can see exactly what's failing on Vercel
-                    // without needing to pull deployment logs. Once we know the
-                    // real cause and fix it, revert this back to a clean
-                    // user-facing message.
+                    // response so we can confirm the fix without pulling logs.
+                    // Revert to a clean user-facing message once confirmed working.
                     return NextResponse.json({
                         success: false,
                         message: `OCR failed: ${ocrError?.message || String(ocrError)}`
