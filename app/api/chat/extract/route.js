@@ -6,10 +6,6 @@ export const maxDuration = 60;
 
 const OCR_SPACE_ENDPOINT = "https://api.ocr.space/parse/image";
 
-// Runs OCR via the OCR.space REST API instead of a local engine like
-// Tesseract.js. This avoids bundling native binaries (tesseract.js,
-// @napi-rs/canvas, pdfjs-dist) which are fragile on Vercel's serverless
-// runtime and were causing silent crashes in production.
 async function ocrWithOcrSpace(buffer, filename, mimeType) {
     const apiKey = process.env.OCR_SPACE_API_KEY;
     if (!apiKey) {
@@ -31,6 +27,9 @@ async function ocrWithOcrSpace(buffer, filename, mimeType) {
     });
 
     if (!response.ok) {
+        if (response.status === 413) {
+            throw new Error("FILE_TOO_LARGE");
+        }
         throw new Error(`OCR.space request failed with status ${response.status}`);
     }
 
@@ -74,9 +73,12 @@ export async function POST(req) {
                     usedOcr = true;
                 } catch (ocrError) {
                     console.error("Scanned-PDF OCR error:", ocrError);
+                    const isTooLarge = ocrError.message === "FILE_TOO_LARGE";
                     return NextResponse.json({
                         success: false,
-                        message: "This PDF appears to be scanned, and OCR on it failed. Try exporting/printing individual pages as images (PNG/JPG) and uploading those instead - image OCR is fully supported."
+                        message: isTooLarge
+                            ? "This scanned PDF is too large for OCR (limit is 1MB). Try compressing it or splitting it into smaller files."
+                            : "This PDF appears to be scanned, and OCR on it failed. Try exporting/printing individual pages as images (PNG/JPG) and uploading those instead - image OCR is fully supported."
                     });
                 }
             }
@@ -89,9 +91,12 @@ export async function POST(req) {
                 usedOcr = true;
             } catch (ocrError) {
                 console.error("Image OCR error:", ocrError);
+                const isTooLarge = ocrError.message === "FILE_TOO_LARGE";
                 return NextResponse.json({
                     success: false,
-                    message: "Failed to extract text from this image via OCR. Please try a clearer image or a different file."
+                    message: isTooLarge
+                        ? "This image is too large for OCR (limit is 1MB). Try compressing it or using a smaller resolution."
+                        : "Failed to extract text from this image via OCR. Please try a clearer image or a different file."
                 });
             }
         } else {
