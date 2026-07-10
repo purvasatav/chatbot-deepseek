@@ -110,9 +110,14 @@ export async function POST(req) {
                     usedOcr = true;
                 } catch (ocrError) {
                     console.error("Scanned-PDF OCR error:", ocrError);
+                    // TEMP DEBUG: surfacing the real error message directly in the
+                    // response so we can see exactly what's failing on Vercel
+                    // without needing to pull deployment logs. Once we know the
+                    // real cause and fix it, revert this back to a clean
+                    // user-facing message.
                     return NextResponse.json({
                         success: false,
-                        message: "This PDF appears to be scanned, and OCR on it failed. Try exporting/printing individual pages as images (PNG/JPG) and uploading those instead - image OCR is fully supported."
+                        message: `OCR failed: ${ocrError?.message || String(ocrError)}`
                     });
                 }
             }
