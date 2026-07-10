@@ -6,9 +6,6 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 async function ocrImageBuffer(buffer) {
-    // On Vercel serverless, only /tmp is writable - Tesseract.js needs
-    // cachePath explicitly set there, or it tries to write to the app
-    // bundle directory (read-only) and crashes with a generic 500.
     const worker = await createWorker("eng", 1, {
         cachePath: "/tmp",
     });
@@ -17,15 +14,44 @@ async function ocrImageBuffer(buffer) {
     return data.text;
 }
 
+// pdfjs-dist's page.render() assumes a browser environment (DOMMatrix,
+// Path2D, ImageData, and a CanvasFactory that returns real <canvas>-like
+// objects). None of that exists in Node by default, so without these
+// polyfills + a custom CanvasFactory, rendering throws internally and
+// gets swallowed by the outer try/catch as a generic "OCR failed".
 async function ocrScannedPdf(buffer) {
     const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    const { createCanvas } = await import("@napi-rs/canvas");
+    const { createCanvas, DOMMatrix, Path2D, ImageData } = await import("@napi-rs/canvas");
+
+    // Polyfill globals pdfjs-dist expects to exist (normally provided by the browser).
+    if (typeof globalThis.DOMMatrix === "undefined") globalThis.DOMMatrix = DOMMatrix;
+    if (typeof globalThis.Path2D === "undefined") globalThis.Path2D = Path2D;
+    if (typeof globalThis.ImageData === "undefined") globalThis.ImageData = ImageData;
+
+    class NodeCanvasFactory {
+        create(width, height) {
+            const canvas = createCanvas(width, height);
+            const context = canvas.getContext("2d");
+            return { canvas, context };
+        }
+        reset(canvasAndContext, width, height) {
+            canvasAndContext.canvas.width = width;
+            canvasAndContext.canvas.height = height;
+        }
+        destroy(canvasAndContext) {
+            canvasAndContext.canvas.width = 0;
+            canvasAndContext.canvas.height = 0;
+            canvasAndContext.canvas = null;
+            canvasAndContext.context = null;
+        }
+    }
 
     const loadingTask = pdfjsLib.getDocument({
         data: new Uint8Array(buffer),
         useWorkerFetch: false,
         isEvalSupported: false,
         useSystemFonts: true,
+        canvasFactory: new NodeCanvasFactory(),
     });
     const pdfDocument = await loadingTask.promise;
 
@@ -36,14 +62,20 @@ async function ocrScannedPdf(buffer) {
     for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
         const page = await pdfDocument.getPage(pageNum);
         const viewport = page.getViewport({ scale: 2.0 });
-        const canvas = createCanvas(viewport.width, viewport.height);
-        const context = canvas.getContext("2d");
+        const canvasFactory = new NodeCanvasFactory();
+        const canvasAndContext = canvasFactory.create(viewport.width, viewport.height);
 
-        await page.render({ canvasContext: context, viewport }).promise;
+        await page.render({
+            canvasContext: canvasAndContext.context,
+            viewport,
+            canvasFactory,
+        }).promise;
 
-        const pageBuffer = canvas.toBuffer("image/png");
+        const pageBuffer = canvasAndContext.canvas.toBuffer("image/png");
         const pageText = await ocrImageBuffer(pageBuffer);
         fullText += pageText.trim() + "\n\n";
+
+        canvasFactory.destroy(canvasAndContext);
     }
 
     if (pdfDocument.numPages > MAX_PAGES) {
